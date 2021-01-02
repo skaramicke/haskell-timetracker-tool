@@ -2,7 +2,7 @@ module Main where
 
 
 import Data.Text ()
-import Data.List
+import Data.List ()
 import Control.Monad ( unless )
 import qualified Data.ByteString as S
 import Control.Lens.Internal.ByteString ( unpackStrict8 )
@@ -11,7 +11,7 @@ import Data.Time.Format ( formatTime, defaultTimeLocale )
 import Data.Time.Clock.POSIX ( utcTimeToPOSIXSeconds, posixSecondsToUTCTime )
 import Data.ByteString.Char8 ( pack )
 import System.IO ( IOMode(ReadMode), IOMode(WriteMode), hPutStr, withFile )
-import System.Environment ( getArgs )
+import System.Environment ( getProgName, getArgs )
 import System.Directory ( doesFileExist )
 
 
@@ -21,7 +21,7 @@ newtype State = State { timers :: [Timer] } deriving (Show, Read, Eq)
 data Timer = Timer { timerIdentifier :: String, events :: [ Int ] } deriving (Show, Read, Eq)
 
 -- The world type, used in returns in the outer pure layer
-type World = (State, Maybe String)
+type World = (State, String)
 
 
 -- global stuff
@@ -36,6 +36,9 @@ main = do
   -- Load state
   state <- loadState
 
+  -- Get program name
+  progName <- getProgName
+
   -- Read input parameters
   args <- getArgs
 
@@ -44,14 +47,13 @@ main = do
   let time = secondsSinceEpoch u
   
   -- Run the pure part of the program
-  let (newState, output) = run state time args
+  let (newState, output) = run state time progName args
 
   -- put state back in the file
   saveState newState
 
   -- produce output for user
-  case output of
-    Just s -> Prelude.putStrLn s
+  Prelude.putStrLn output
 
 
 
@@ -68,40 +70,47 @@ loadState = do
   return state
 
 saveState :: State -> IO ()
-saveState s = do
-  S.writeFile filename $ pack $ show s
+saveState s = S.writeFile filename $ pack $ show s
 
 
 -- Pure entry point
-run :: State -> Int -> [String] -> World
+run :: State -> Int -> String -> [String] -> World
 
-run state time [] = -- No arguments, print what timers are running
+run state time _ [] = -- No arguments, print what timers are running
   let activeTimers = filter (odd.length.events) (timers state)
       names = map timerIdentifier activeTimers
       eventLists = map events activeTimers
       startTimes = map last eventLists
   in case names of
-    [] -> (state, Just "Not tracking")
-    [x] -> (state, Just (
-      x ++ ": " ++ timeStringFromSeconds (timeBetweenTimestamps (last startTimes) time)))
-    x -> (state, Just ("Currently tracking " ++ commalist (quoteall x) ++ " ... eventhough there should be only one"))
+    [] -> (state, "Not tracking")
+    [x] -> (state, 
+      x ++ ": " ++ timeStringFromSeconds (timeBetweenTimestamps (last startTimes) time))
+    x -> (state, "Currently tracking " ++ commalist (quoteall x) ++ " ... eventhough there should be only one")
     
-run state time [arg] = -- Single argument
+run state time progName [arg] = -- Single argument
   case arg of
+    "--help" -> (state, helpText progName)
+    "help" -> (state, helpText progName)
     "start" -> startTimer time "generic" state
     "stop" -> stopAllTimers time state
     "report" -> report time state
-    "clear" -> (state, Just "Are you sure you want to clear all projects? Let me know using --for-sure")
-    arg -> (state, Just $ "I don't know how to " ++ arg)
+    "clear" -> (state, "Are you sure you want to clear all projects? Let me know using --for-sure")
+    arg -> (state, "I don't know how to " ++ arg)
 
-run state time (arg:args) =
+run state time _ (arg:args) = -- Any amount of arguments
   case arg of
     "start" -> startTimer time (Prelude.unwords args) state
     "stop" -> stopAllTimers time state
     "clear" -> case firstElement args of
-                  Just "--for-sure" -> (state, Just "removing EVERYTHING!!1 but not really becuse it's not implemented yet")
-                  Just timerName -> (state, Just ("removing "++timerName++" but not really becuse it's not implemented yet"))
-    arg -> (state, Just $ "I don't know how to " ++ arg ++ Prelude.unwords args)
+                  Just "--for-sure" -> (state, "removing EVERYTHING!!1 but not really becuse it's not implemented yet")
+                  Just timerName -> (state, "removing "++timerName++" but not really becuse it's not implemented yet")
+    arg -> (state, "I don't know how to " ++ arg ++ Prelude.unwords args)
+
+
+helpText :: String -> String
+helpText p = "Examples: " ++ p ++ " start [name]\n"
+          ++ "          " ++ p ++ " stop [name]\n"
+          ++ "          " ++ p ++ " report\n"
 
 
 firstElement :: [a] -> Maybe a
@@ -122,7 +131,7 @@ startTimer :: Int -> String -> State -> World
 startTimer time timerName state =
   case filter (\t -> timerIdentifier t == timerName) (timers state) of
     [] -> createTimer time timerName state
-    x -> ( state { timers = startMatchingTimers time (timers state) timerName } , Just ("Started tracking " ++ timerName) )
+    x -> (state { timers = startMatchingTimers time (timers state) timerName }, "Started tracking " ++ timerName)
 
 
 stopNonMatchingRunningTimers :: Int -> [Timer] -> String -> [Timer]
@@ -147,17 +156,23 @@ startMatchingTimers time timers identifier = map
 
 createTimer :: Int -> String -> State -> World
 createTimer time timerName state =
-  ((state { timers = stopNonMatchingRunningTimers time (timers state) timerName ++ [Timer timerName [time]] }), Just ("Started tracking " ++ timerName))
+  ( ( state { timers = stopNonMatchingRunningTimers time (timers state) timerName ++ [Timer timerName [time]] })
+    , "Started tracking " ++ timerName
+  )
   
 
 stopAllTimers :: Int -> State -> World
 stopAllTimers time state =
-  ( state { timers = map
-  (\t ->
-    if odd (length (events t))
-      then t { events = events t ++ [time] }
-      else t
-  ) (timers state) }, Just "Stopped tracking time" )
+  ( state 
+    { timers = map
+                      (\t ->
+                        if odd (length (events t))
+                          then t { events = events t ++ [time] }
+                          else t
+                      ) (timers state)
+    }
+    , "Stopped tracking time"
+  )
 
 
 pairs :: [a] -> [(a, a)]
@@ -175,7 +190,7 @@ pairs' (x:y:xs) evener = (x, y) : pairs' xs evener
 
 report :: Int -> State -> World
 report time state =
-  (state, Just ("== Report ==" ++ unwords (reportString (timers state) time)))
+  (state, "== Report ==" ++ unwords (reportString (timers state) time))
 
 reportString :: [Timer] -> Int -> [String]
 reportString [] _ = ["\n- Nothing to report"]
